@@ -1,115 +1,237 @@
+// This example demonstrates how to play a playlist with a mix of URI and asset
+// audio sources, and the ability to add/remove/reorder playlist items.
+//
+// To run:
+//
+// flutter run -t lib/example_playlist.dart
+import 'package:just_audio/just_audio.dart';
+import 'package:audio_session/audio_session.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:jus_audio_test/common.dart';
 
-void main() {
-  runApp(const MyApp());
+import 'package:rxdart/rxdart.dart';
+
+void main() => runApp(const MyApp());
+
+class MyApp extends StatefulWidget {
+  const MyApp({Key? key}) : super(key: key);
+
+  @override
+  MyAppState createState() => MyAppState();
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class MyAppState extends State<MyApp> with WidgetsBindingObserver {
+  late AudioPlayer _player;
+  final _playlist = ConcatenatingAudioSource(children: [
+    // Remove this audio source from the Windows and Linux version because it's not supported yet
+    if (kIsWeb ||
+        ![TargetPlatform.windows, TargetPlatform.linux]
+            .contains(defaultTargetPlatform))
+      ClippingAudioSource(
+        start: const Duration(seconds: 60),
+        end: const Duration(seconds: 90),
+        child: AudioSource.uri(Uri.parse(
+            "https://mohamad-voj.ir/files/Alireza%20jj%20-%20GhesmateMan.mp3")),
+        tag: "test",
+      ),
+  ]);
+  int _addedCount = 0;
+  final _scaffoldMessengerKey = GlobalKey<ScaffoldMessengerState>();
 
-  // This widget is the root of your application.
+  @override
+  void initState() {
+    super.initState();
+    ambiguate(WidgetsBinding.instance)!.addObserver(this);
+    _player = AudioPlayer();
+    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+      statusBarColor: Colors.black,
+    ));
+    _init();
+  }
+
+  Future<void> _init() async {
+    final session = await AudioSession.instance;
+    await session.configure(const AudioSessionConfiguration.speech());
+    // Listen to errors during playback.
+    _player.playbackEventStream.listen((event) {},
+        onError: (Object e, StackTrace stackTrace) {
+          print('A stream error occurred: $e');
+        });
+    try {
+      // Preloading audio is not currently supported on Linux.
+      await _player.setAudioSource(_playlist,
+          preload: kIsWeb || defaultTargetPlatform != TargetPlatform.linux);
+    } catch (e) {
+      // Catch load errors: 404, invalid url...
+      print("Error loading audio source: $e");
+    }
+
+  }
+
+
+
+  @override
+  void dispose() {
+    ambiguate(WidgetsBinding.instance)!.removeObserver(this);
+    _player.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      // Release the player's resources when not in use. We use "stop" so that
+      // if the app resumes later, it will still remember what position to
+      // resume from.
+      _player.stop();
+    }
+  }
+
+  Stream<PositionData> get _positionDataStream =>
+      Rx.combineLatest3<Duration, Duration, Duration?, PositionData>(
+          _player.positionStream,
+          _player.bufferedPositionStream,
+          _player.durationStream,
+              (position, bufferedPosition, duration) => PositionData(
+              position, bufferedPosition, duration ?? Duration.zero));
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // Try running your application with "flutter run". You'll see the
-        // application has a blue toolbar. Then, without quitting the app, try
-        // changing the primarySwatch below to Colors.green and then invoke
-        // "hot reload" (press "r" in the console where you ran "flutter run",
-        // or simply save your changes to "hot reload" in a Flutter IDE).
-        // Notice that the counter didn't reset back to zero; the application
-        // is not restarted.
-        primarySwatch: Colors.blue,
+      debugShowCheckedModeBanner: false,
+      scaffoldMessengerKey: _scaffoldMessengerKey,
+      home: Scaffold(
+        body: SafeArea(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+
+              ControlButtons(_player),
+              StreamBuilder<PositionData>(
+                stream: _positionDataStream,
+                builder: (context, snapshot) {
+                  final positionData = snapshot.data;
+                  return SeekBar(
+                    duration: positionData?.duration ?? Duration.zero,
+                    position: positionData?.position ?? Duration.zero,
+                    bufferedPosition:
+                    positionData?.bufferedPosition ?? Duration.zero,
+                    onChangeEnd: (newPosition) {
+                      _player.seek(newPosition);
+                    },
+                  );
+                },
+              ),
+
+
+            ],
+          ),
+        ),
+
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
+class ControlButtons extends StatelessWidget {
+  final AudioPlayer player;
 
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
-
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
-
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
-  }
+  const ControlButtons(this.player, {Key? key}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-    return Scaffold(
-      appBar: AppBar(
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Invoke "debug painting" (press "p" in the console, choose the
-          // "Toggle Debug Paint" action from the Flutter Inspector in Android
-          // Studio, or the "Toggle Debug Paint" command in Visual Studio Code)
-          // to see the wireframe for each widget.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text(
-              'You have pushed the button this many times:',
-            ),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headline4,
-            ),
-          ],
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          icon: const Icon(Icons.volume_up),
+          onPressed: () {
+            showSliderDialog(
+              context: context,
+              title: "Adjust volume",
+              divisions: 10,
+              min: 0.0,
+              max: 1.0,
+              value: player.volume,
+              stream: player.volumeStream,
+              onChanged: player.setVolume,
+            );
+          },
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
+        StreamBuilder<SequenceState?>(
+          stream: player.sequenceStateStream,
+          builder: (context, snapshot) => IconButton(
+            icon: const Icon(Icons.skip_previous),
+            onPressed: player.hasPrevious ? player.seekToPrevious : null,
+          ),
+        ),
+        StreamBuilder<PlayerState>(
+          stream: player.playerStateStream,
+          builder: (context, snapshot) {
+            final playerState = snapshot.data;
+            final processingState = playerState?.processingState;
+            final playing = playerState?.playing;
+            if (processingState == ProcessingState.loading ||
+                processingState == ProcessingState.buffering) {
+              return Container(
+                margin: const EdgeInsets.all(8.0),
+                width: 64.0,
+                height: 64.0,
+                child: const CircularProgressIndicator(),
+              );
+            } else if (playing != true) {
+              return IconButton(
+                icon: const Icon(Icons.play_arrow),
+                iconSize: 64.0,
+                onPressed: player.play,
+              );
+            } else if (processingState != ProcessingState.completed) {
+              return IconButton(
+                icon: const Icon(Icons.pause),
+                iconSize: 64.0,
+                onPressed: player.pause,
+              );
+            } else {
+              return IconButton(
+                icon: const Icon(Icons.replay),
+                iconSize: 64.0,
+                onPressed: () => player.seek(Duration.zero,
+                    index: player.effectiveIndices!.first),
+              );
+            }
+          },
+        ),
+        StreamBuilder<SequenceState?>(
+          stream: player.sequenceStateStream,
+          builder: (context, snapshot) => IconButton(
+            icon: const Icon(Icons.skip_next),
+            onPressed: player.hasNext ? player.seekToNext : null,
+          ),
+        ),
+        StreamBuilder<double>(
+          stream: player.speedStream,
+          builder: (context, snapshot) => IconButton(
+            icon: Text("${snapshot.data?.toStringAsFixed(1)}x",
+                style: const TextStyle(fontWeight: FontWeight.bold)),
+            onPressed: () {
+              showSliderDialog(
+                context: context,
+                title: "Adjust speed",
+                divisions: 10,
+                min: 0.5,
+                max: 1.5,
+                value: player.speed,
+                stream: player.speedStream,
+                onChanged: player.setSpeed,
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 }
+
